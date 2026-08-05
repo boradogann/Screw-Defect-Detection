@@ -1,18 +1,22 @@
 from pathlib import Path
 import cv2
-import gradio as gr
-import numpy as np
-
-# Matplotlib headless mode (sunucu çökmesini önler)
 import matplotlib
 
 matplotlib.use("Agg")
+import numpy as np
 from PIL import Image, ImageOps
+import streamlit as st
 import tensorflow as tf
 
 # =========================================================
-# AYARLAR (GÖRELİ DOSYA YOLLARI)
+# SAYFA VE MODEL AYARLARI
 # =========================================================
+st.set_page_config(
+    page_title="Vida Kusur Tespiti", page_icon="🔩", layout="wide"
+)
+
+st.title("🔩 Vida Yüzey Kusuru & Anomali Tespit Sistemi")
+st.caption("ResNet50 Patch-Based Anomali & Isı Haritası Çıkarım Arayüzü")
 
 # Model dosyası app.py ile aynı klasörde olmalıdır
 BEST_MODEL_PATH = Path("best_resnet50_nonoverlap_64.keras")
@@ -25,25 +29,30 @@ BATCH_SIZE = 32
 MIN_SCREW_RATIO = 0.20
 SCREW_BBOX_PAD = 12
 
-# Image-level karar eşiği
 IMAGE_THRESHOLD = 0.8093571662902832
-
-# Heatmap/localization threshold
 PATCH_THRESHOLD_FOR_HEATMAP = 0.615128350257874
-
-# Hata bounding box padding
 DEFECT_BBOX_PAD = 6
 
-print("Model yükleniyor...")
-model = tf.keras.models.load_model(BEST_MODEL_PATH)
-print("Model başarıyla yüklendi!")
+
+# Model Yükleme (Streamlit Önbelleği - Hafıza Tasarrufu Sağlar)
+@st.cache_resource
+def load_keras_model():
+    return tf.keras.models.load_model(BEST_MODEL_PATH)
+
+
+try:
+    with st.spinner("Yapay zeka modeli yükleniyor..."):
+        model = load_keras_model()
+except Exception as e:
+    st.error(
+        f"Model yüklenemedi! Lütfen 'best_resnet50_nonoverlap_64.keras' dosyasının depoda olduğundan emin olun. Hata: {e}"
+    )
+    st.stop()
 
 
 # =========================================================
 # YARDIMCI FONKSİYONLAR
 # =========================================================
-
-
 def pil_to_rgb_array(pil_img):
     pil_img = ImageOps.exif_transpose(pil_img)
     pil_img = pil_img.convert("RGB")
@@ -338,71 +347,78 @@ def make_component_bbox_image(image_rgb, core_mask, bbox):
     return out
 
 
-def predict_demo(input_image):
-    if input_image is None:
-        return None, None, None
-
-    image_rgb = pil_to_rgb_array(input_image)
-    heatmap, screw_mask, top3_mean, pred_label = build_heatmap_from_image(
-        image_rgb
-    )
-
-    support_mask, core_mask, defect_bbox = refine_defect_region(
-        heatmap=heatmap,
-        threshold=PATCH_THRESHOLD_FOR_HEATMAP,
-        min_area=250,
-        morph_kernel=7,
-        dilate_iter=1,
-        bbox_pad=DEFECT_BBOX_PAD,
-    )
-
-    if pred_label == "SOLID":
-        core_mask = np.zeros_like(core_mask)
-        defect_bbox = None
-
-    overlay_img = make_overlay(image_rgb, core_mask, pred_label, top3_mean)
-    heatmap_img = make_focused_heatmap_image(
-        heatmap, core_mask, defect_bbox, expand=15
-    )
-    component_img = make_component_bbox_image(
-        image_rgb, core_mask, defect_bbox
-    )
-
-    return overlay_img, heatmap_img, component_img
-
-
 # =========================================================
-# GRADIO ARAYÜZ
+# STREAMLIT ARAYÜZ
 # =========================================================
 
-with gr.Blocks(theme=gr.themes.Soft(), title="Vida Kusur Tespiti") as demo:
-    gr.Markdown("## 🔩 Vida Yüzey Kusuru & Anomali Tespit Sistemi")
-    gr.Markdown(
-        "Vida görseli yükleyin. Model otomatik olarak kusur bölgesi (overlay), ısı haritası (heatmap) ve sınır kutusunu (bounding box) çıkarsın."
-    )
+uploaded_file = st.file_uploader(
+    "Test Edilecek Vida Görselini Yükleyin...", type=["jpg", "jpeg", "png"]
+)
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            input_img = gr.Image(type="pil", label="Vida Görseli Yükle")
-            with gr.Row():
-                clear_btn = gr.ClearButton(
-                    value="Temizle", components=[input_img]
-                )
-                submit_btn = gr.Button("Analiz Et", variant="primary")
+if uploaded_file is not None:
+    # Yüklenen resmi göster
+    input_image = Image.open(uploaded_file)
 
-        with gr.Column(scale=1):
-            overlay_out = gr.Image(type="numpy", label="Overlay Sonucu")
-            heatmap_out = gr.Image(type="numpy", label="Heatmap Sonucu")
-            bbox_out = gr.Image(
-                type="numpy", label="Bounding Box / Kusur Bölgesi"
+    st.divider()
+
+    with st.spinner("Model görüntüyü tarıyor ve analiz çıkarıyor..."):
+        try:
+            image_rgb = pil_to_rgb_array(input_image)
+            heatmap, screw_mask, top3_mean, pred_label = (
+                build_heatmap_from_image(image_rgb)
             )
 
-    submit_btn.click(
-        fn=predict_demo,
-        inputs=input_img,
-        outputs=[overlay_out, heatmap_out, bbox_out],
-    )
+            support_mask, core_mask, defect_bbox = refine_defect_region(
+                heatmap=heatmap,
+                threshold=PATCH_THRESHOLD_FOR_HEATMAP,
+                min_area=250,
+                morph_kernel=7,
+                dilate_iter=1,
+                bbox_pad=DEFECT_BBOX_PAD,
+            )
 
-# Sunucu üzerinde yayına alma çalıştırması
-if __name__ == "__main__":
-    demo.launch()
+            if pred_label == "SOLID":
+                core_mask = np.zeros_like(core_mask)
+                defect_bbox = None
+
+            overlay_img = make_overlay(
+                image_rgb, core_mask, pred_label, top3_mean
+            )
+            heatmap_img = make_focused_heatmap_image(
+                heatmap, core_mask, defect_bbox, expand=15
+            )
+            component_img = make_component_bbox_image(
+                image_rgb, core_mask, defect_bbox
+            )
+
+            # --- SONUÇ BİLDİRİMİ ---
+            if pred_label == "DEFECTED":
+                st.error(
+                    f"⚠️ KUSUR TESPİT EDİLDİ! (Anomali Skoru: {top3_mean:.3f})"
+                )
+            else:
+                st.success(
+                    f"✅ ÜRÜN SAĞLAM / OK (Anomali Skoru: {top3_mean:.3f})"
+                )
+
+            # --- GÖRSEL YANYANA SÜTUNLAR ---
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.write("**Orijinal Görsel**")
+                st.image(input_image, use_container_width=True)
+
+            with col2:
+                st.write("**Overlay Sonuç**")
+                st.image(overlay_img, use_container_width=True)
+
+            with col3:
+                st.write("**Focused Heatmap**")
+                st.image(heatmap_img, use_container_width=True)
+
+            with col4:
+                st.write("**Bounding Box**")
+                st.image(component_img, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Görüntü işleme sırasında bir hata oluştu: {e}")
