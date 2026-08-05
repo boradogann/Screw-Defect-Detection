@@ -1,5 +1,6 @@
 streamlit
 tensorflow==2.15.0
+starlette<0.38.0
 opencv-python-headless
 pillow
 numpy
