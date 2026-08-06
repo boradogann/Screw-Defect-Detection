@@ -135,12 +135,11 @@ def extract_and_prepare_patches(image_np):
 
             img_patch = image_pad[y:y+PATCH_SIZE, x:x+PATCH_SIZE]
             
-            # Modeli eğitirken kullanılan 224x224 boyutuna getir (0-255 değer aralığı korunur)
+            # Modeli eğitirken kullanılan 224x224 boyutuna getir
             img_patch_pil = Image.fromarray(img_patch)
             img_224 = img_patch_pil.resize((MODEL_INPUT_SIZE, MODEL_INPUT_SIZE), resample=Image.BILINEAR)
             
             patches.append(np.array(img_224, dtype=np.float32))
-            # Kutuları orjinal resim üzerinde çizebilmek için global x,y değerleri
             coords.append((x1 + x, y1 + y))
 
     if not patches:
@@ -152,11 +151,23 @@ def extract_and_prepare_patches(image_np):
 # =========================================================
 # ARAYÜZ VE ÇIKARIM
 # =========================================================
-st.sidebar.header("⚙️ Ayarlar & Dosya Yükleme")
+st.sidebar.header("⚙️ Ayarlar & Görüntü Alma")
 
-uploaded_file = st.sidebar.file_uploader(
-    "Test Edilecek Vida Görselini Seçin", type=["png", "jpg", "jpeg"]
+görüntü_kaynağı = st.sidebar.radio(
+    "Görüntü Kaynağını Seçin:",
+    ("📂 Dosya Yükle (Galeri / PC)", "📸 Kameradan Çek (Anlık)")
 )
+
+uploaded_file = None
+
+if görüntü_kaynağı == "📂 Dosya Yükle (Galeri / PC)":
+    uploaded_file = st.sidebar.file_uploader(
+        "Test Edilecek Vida Görselini Seçin", type=["png", "jpg", "jpeg"]
+    )
+else:
+    # Kamera doğrudan ana ekranda geniş olarak açılır
+    st.subheader("📸 Kamera ile Vida Görseli Çekin")
+    uploaded_file = st.camera_input("Fotoğraf Çek")
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
@@ -165,8 +176,13 @@ if uploaded_file is not None:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("🖼️ Yüklenen Orijinal Görsel")
-        st.image(image, use_container_width=True)
+        st.subheader("🖼️ İşlenecek Görsel")
+        # Matplotlib ile görseli ekranda sabit boyutlu tutarak uzamasını engelliyoruz
+        fig_orig, ax_orig = plt.subplots(figsize=(4, 4))
+        ax_orig.imshow(image_np)
+        ax_orig.axis("off")
+        fig_orig.tight_layout()
+        st.pyplot(fig_orig)
 
     with col2:
         st.subheader("🔍 Analiz Sonucu")
@@ -177,7 +193,6 @@ if uploaded_file is not None:
             if patches is None or len(patches) == 0:
                 st.warning("Bu görselde incelenecek uygun vida bölgesi bulunamadı.")
             else:
-                # Modele pikseller verilir
                 probs = model.predict(patches, verbose=0).flatten()
 
                 # Top-3 Aggregation hesaplama
@@ -200,16 +215,14 @@ if uploaded_file is not None:
                 st.divider()
                 st.subheader("🗺️ Kusur Tespit Haritası")
 
-                fig, ax = plt.subplots(figsize=(6, 6))
+                h, w = image_np.shape[:2]
+                fig, ax = plt.subplots(figsize=(4, 4))
                 ax.imshow(image_np)
 
-                # Sadece vida hatalıysa çizim yap
                 if is_defective:
-                    # 1. Tüm resim boyutunda siyah bir maske oluştur
-                    mask = np.zeros(image_np.shape[:2], dtype=np.uint8)
+                    mask = np.zeros((h, w), dtype=np.uint8)
                     has_defect_patch = False
                     
-                    # 2. Eşiği geçen yamaları maske üzerinde beyaza (255) boya
                     for i, (x, y) in enumerate(coords):
                         score = probs[i]
                         if score >= PATCH_THRESHOLD:
@@ -217,15 +230,12 @@ if uploaded_file is not None:
                             mask[y:y+PATCH_SIZE, x:x+PATCH_SIZE] = 255
                             
                     if has_defect_patch:
-                        # 3. Birbirine bağlı olan alanları (connected components) bul
                         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
                         
                         if num_labels > 1:
-                            # Arka plan (0. etiket) hariç en büyük alanı seç
                             largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
                             bx, by, bw, bh, area = stats[largest_label]
                             
-                            # 4. En büyük alanın etrafına tek bir kutu çiz
                             rect = plt.Rectangle(
                                 (bx, by), bw, bh,
                                 linewidth=3, edgecolor="r", facecolor="none"
@@ -233,7 +243,7 @@ if uploaded_file is not None:
                             ax.add_patch(rect)
                             ax.text(
                                 bx, by - 10, "Kusur",
-                                color="red", fontsize=12, weight="bold",
+                                color="red", fontsize=10, weight="bold",
                                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1)
                             )
                     else:
@@ -242,6 +252,8 @@ if uploaded_file is not None:
                     st.info("Görsel sağlam olduğu için işaretleme yapılmadı.")
 
                 ax.axis("off")
+                fig.tight_layout()
                 st.pyplot(fig)
 else:
-    st.info("Lütfen sol taraftaki menüden analiz edilecek bir vida resmi yükleyin.")
+    if görüntü_kaynağı == "📂 Dosya Yükle (Galeri / PC)":
+        st.info("Lütfen sol taraftaki menüden analiz edilecek bir vida resmi yükleyin.")
